@@ -1,296 +1,128 @@
 # TaskMaster API
 
-Backend for TaskMaster, a productivity app that manages user accounts, projects, and tasks. The API uses Express, MongoDB, and JWT authentication. Every project and task route checks that the logged-in user owns the data.
+## By [Mamadou Moussa Balde](https://www.linkedin.com/in/2mb/)
 
-## Project structure
+This is an Express and Mongoose API for user accounts, projects, and tasks. It does not serve an HTML page. The server reads `PORT`, `MONGO_URI`, and `JWT_SECRET` from the environment. `server.js` uses `PORT` or `3001`. This run printed `injected env (3) from .env` and `App is listening on localhost:3000`.
+
+From this folder:
 
 ```
-server.js                 Entry point: loads env, connects to MongoDB, mounts routes
-config/connection.js      Mongoose connection using MONGO_URI
-models/index.js           Exports User, Project, and Task
-models/User.js            User schema, password hash, password check
-models/Project.js         Project schema with a reference to its owner
-models/Task.js            Task schema with a reference to its project
-routes/index.js           Mounts /api and the 404 handler
-routes/api/index.js       Splits /users, /projects, and /tasks
-routes/api/userRoutes.js  Register and login
-routes/api/projectRoutes.js  Project CRUD and nested task create/list
-routes/api/taskRoutes.js  Update and delete a single task
-controllers/userController.js
-controllers/projectController.js
-controllers/taskController.js
-utils/auth.js             Signs JWTs and checks the Authorization header
-```
-
-Routes only match a URL and call a controller. Controllers talk to the models. `utils/auth.js` sits in front of every project and task route.
-
-## Workflow
-
-1. `npm start` runs `server.js`. It loads `.env`, opens the MongoDB connection, and listens on `PORT`.
-2. A request hits `routes/index.js`, which forwards anything under `/api` to `routes/api/index.js`. Unknown paths return `404`.
-3. `routes/api/index.js` sends the request to the user, project, or task router.
-4. **Register.** `POST /api/users/register` creates a user. The User model's `pre-save` hook hashes the password with bcrypt, then `signToken` returns a JWT.
-5. **Login.** `POST /api/users/login` finds the user by email, compares the password with `isCorrectPassword`, and returns a JWT when the password matches.
-6. **Protected routes.** Project and task routers run `authMiddleware` first. It reads `Authorization: Bearer <token>`, verifies the token with `JWT_SECRET`, and sets `req.user`. A missing or invalid token returns `401`.
-7. **Projects.** The controller saves `req.user._id` as the project's `user`. List, read, update, and delete only succeed when that field matches the logged-in user. Another user's project returns `403`.
-8. **Tasks.** Create and list load the project in `:projectId` and require that the logged-in user owns it. Update and delete load the task, then its parent project, and apply the same ownership check. A failed check returns `403`. A missing project or task returns `404`.
-
-## Data workflow
-
-A user owns many projects. A project contains many tasks. The link is stored as an id, not a nested document.
-
-```mermaid
-erDiagram
-  USER ||--o{ PROJECT : owns
-  PROJECT ||--o{ TASK : contains
-  USER {
-    string username
-    string email UK
-    string password
-    string role
-  }
-  PROJECT {
-    string name
-    string description
-    ObjectId user FK
-  }
-  TASK {
-    string title
-    string description
-    string status
-    ObjectId project FK
-  }
-```
-
-Registration writes a user. Login only reads that user and returns a token. Project and task writes happen after the token is checked.
-
-```mermaid
-flowchart TD
-  request[JSON request] --> route{Which route?}
-  route -->|register| hash[Hash password with bcrypt]
-  hash --> users[(users)]
-  users --> token[Return JWT]
-  route -->|login| findUser[Find user by email]
-  findUser --> compare[Compare password to hash]
-  compare --> token
-  route -->|projects or tasks| auth{Valid token?}
-  auth -->|no| denied401[401]
-  auth -->|yes| owner{Does req.user own the parent?}
-  owner -->|no| denied403[403]
-  owner -->|create project| projects[(projects.user = req.user._id)]
-  owner -->|create or list tasks| tasks[(tasks.project = projectId)]
-  owner -->|update or delete task| parent[Load task, then its project]
-  parent --> owner
-```
-
-Updating or deleting a task is the longest path, because the task document does not store the owner. The owner lives on the parent project.
-
-```mermaid
-sequenceDiagram
-  participant Client
-  participant Auth
-  participant Controller
-  participant Tasks
-  participant Projects
-  Client->>Auth: PUT /api/tasks/:taskId with Bearer token
-  Auth->>Auth: Verify JWT and set req.user
-  Auth->>Controller: Continue
-  Controller->>Tasks: Find task by taskId
-  Controller->>Projects: Find project by task.project
-  alt Project owner is not req.user
-    Controller-->>Client: 403 Forbidden
-  else Project owner matches req.user
-    Controller->>Tasks: Update or delete the task
-    Controller-->>Client: 200 and the result
-  end
-```
-
-## Setup
-
-1. Install dependencies:
-
-```bash
 npm install
-```
-
-2. Create a `.env` file in the project root:
-
-```
-MONGO_URI=your_mongodb_connection_string
-PORT=3000
-JWT_SECRET=your_secret
-```
-
-`.env` is listed in `.gitignore` and must not be committed.
-
-3. Start the server:
-
-```bash
 npm start
 ```
 
-The examples below use `http://localhost:3000`. Send JSON bodies with the header `Content-Type: application/json`. Protected routes also need `Authorization: Bearer <token>`.
+`npm run dev` starts the same file with nodemon.
 
-## API
+A user has a username, email, password, and role. A project has a name, description, and the id of its owner. A task has a title, description, status, and the id of its project.
 
-### Users
+## Accounts
 
-| Method | Path | Auth | Description |
-| --- | --- | --- | --- |
-| POST | `/api/users/register` | No | Create a user and return a token |
-| POST | `/api/users/login` | No | Check email and password, then return a token |
+`POST /api/users/register` creates a user and returns 201 with a token and the user document. The password is hashed with bcrypt before it is saved, and the response still includes that hash. The token payload is the username, email, and `_id`. It expires in 2 hours. The role is not in the token.
 
-Register body:
+This account was created with username `maya_tasks`, email `maya.tasks@example.com`, and password `coffee123`. The role was left out, so it came back as `user`.
 
-```json
-{
-  "username": "usera",
-  "email": "usera@test.com",
-  "password": "secret1"
-}
-```
+![Register returns 201 with a token and the hashed password](docs/screenshots/register.png)
 
-Login body:
+`POST /api/users/login` finds the user by email. A match returns 200 with a new token and the same user document, including the hash. Login puts `_id` first in the user object.
 
-```json
-{
-  "email": "usera@test.com",
-  "password": "secret1"
-}
-```
+![Login returns 200](docs/screenshots/login.png)
 
-Passwords are hashed with bcrypt before they are saved. A successful register or login returns `{ "token": "...", "user": { ... } }`.
+Sending `"role": "admin"` on register stores that role. The account `ada_tasks` / `ada.tasks@example.com` came back with `"role": "admin"`. A third account, `leo_tasks` / `leo.tasks@example.com`, was created with the default role `user`. Those three accounts are still in the database. There is no route that deletes a user.
 
-### Projects
+A password shorter than 5 characters is rejected with 400. The error repeats the submitted password. This request used `tiny`.
 
-All project routes require a valid token. The owner is taken from the token, not from the request body.
+![A 4-character password returns 400](docs/screenshots/short-password.png)
 
-| Method | Path | Description |
-| --- | --- | --- |
-| POST | `/api/projects` | Create a project for the logged-in user |
-| GET | `/api/projects` | List projects owned by the logged-in user |
-| GET | `/api/projects/:id` | Get one project the user owns |
-| PUT | `/api/projects/:id` | Update a project the user owns |
-| DELETE | `/api/projects/:id` | Delete a project the user owns |
+An email that does not match `/.+@.+\..+/` is rejected with 400 and the message `Must use a valid email address`. This request used `not-an-email`.
 
-Create body:
+![A bad email returns 400](docs/screenshots/bad-email.png)
 
-```json
-{
-  "name": "Alpha",
-  "description": "First project"
-}
-```
+A duplicate username returns 400 with a Mongo `E11000` error on `Project_BD.users` index `username_1`.
 
-### Tasks
+![A duplicate username returns 400](docs/screenshots/duplicate.png)
 
-Creating and listing tasks requires ownership of the parent project. Updating and deleting a task finds that task, loads its project, and checks that the logged-in user owns the project.
+A duplicate email returns the same kind of 400, on index `email_1`. Registering `email_dup_tasks` with `maya.tasks@example.com` produced `E11000 duplicate key error collection: Project_BD.users index: email_1`.
 
-| Method | Path | Description |
-| --- | --- | --- |
-| POST | `/api/projects/:projectId/tasks` | Create a task on a project the user owns |
-| GET | `/api/projects/:projectId/tasks` | List tasks for a project the user owns |
-| PUT | `/api/tasks/:taskId` | Update a task on a project the user owns |
-| DELETE | `/api/tasks/:taskId` | Delete a task on a project the user owns |
+A wrong password returns 400 and `{ "message": "Wrong password!" }`.
 
-Create body:
+![A wrong password returns 400](docs/screenshots/wrong-password.png)
 
-```json
-{
-  "title": "Write tests",
-  "description": "Cover CRUD",
-  "status": "pending"
-}
-```
+An unknown email returns 400 and `{ "message": "Can't find this user" }`.
 
-`status` must be `pending`, `in progress`, or `complete`. It defaults to `pending`.
+![An unknown email returns 400](docs/screenshots/unknown-user.png)
 
-## Test cases
+## Projects
 
-Use two accounts so the ownership checks can be verified. Call them User A and User B.
+Every project route and every task route runs the auth middleware first. It reads a token from the JSON body, the query string, or the `Authorization` header. When the header is present, it uses the last space-separated piece. A request with no token returns 401.
 
-### 1. Register User A
+![A project list with no token returns 401](docs/screenshots/no-token.png)
 
-- **Request:** `POST /api/users/register`
-- **Body:** `{ "username": "usera", "email": "usera@test.com", "password": "secret1" }`
-- **Expect:** `201` and a `token`
+A token that does not verify returns 401 and `{ "message": "Invalid token." }`. The server also prints `Invalid token`.
 
-### 2. Register User B
+![A bad token returns 401](docs/screenshots/invalid-token.png)
 
-- **Request:** `POST /api/users/register`
-- **Body:** `{ "username": "userb", "email": "userb@test.com", "password": "secret2" }`
-- **Expect:** `201` and a different `token`
+A query token is enough. `GET /api/projects?token=...` with Maya's token returned 200 and her project list.
 
-### 3. Log in
+`POST /api/projects` saves the name and description and sets `user` to the logged-in user's id. This body also sent `"user": "000000000000000000000000"`. The saved project belongs to Maya, `6acfcbf14120d03a71274f93`.
 
-- **Request:** `POST /api/users/login`
-- **Body:** `{ "email": "usera@test.com", "password": "secret1" }`
-- **Expect:** `200` and a token
-- **Wrong password:** `400`
+![Creating Alpha returns 201](docs/screenshots/project.png)
 
-### 4. Reject a protected route with no token
+`GET /api/projects` returns only that user's projects. Maya's list had this project. Leo's list was `[]`.
 
-- **Request:** `GET /api/projects` with no `Authorization` header
-- **Expect:** `401`
+`GET /api/projects/:id` returns the project when the logged-in user owns it. Leo's token on Maya's project returned 403.
 
-### 5. User A creates a project
+![Another user cannot view the project](docs/screenshots/forbidden.png)
 
-- **Request:** `POST /api/projects` with User A's token
-- **Body:** `{ "name": "Alpha", "description": "First project" }`
-- **Expect:** `201`. Save the returned `_id` as `projectId`. The `user` field matches User A.
+Leo's update returned 403 and `{ "message": "User is not authorized to update this project." }`. Leo's delete returned 403 and `{ "message": "User is not authorized to delete this project." }`.
 
-### 6. Each user sees only their own projects
+Maya's update renamed the project to `Alpha Updated` and set the description to `Still mine`. The body also sent a different `user` id. That field was removed before the update, so the owner stayed Maya. `createdAt` stayed `2026-10-14T18:38:39.969Z` and `updatedAt` moved to `2026-10-14T18:40:12.543Z`. Both updates logged Mongoose's warning that the `new` option on `findOneAndUpdate()` is deprecated.
 
-- **Request:** `GET /api/projects` with User A's token
-- **Expect:** `200` and a list that includes Alpha
-- **Request:** `GET /api/projects` with User B's token
-- **Expect:** `200` and an empty list
+![The project after the update](docs/screenshots/updated.png)
 
-### 7. User B cannot read, update, or delete User A's project
+A create that omits name and description returns 400. The message is "Project validation failed: description: Path `description` is required., name: Path `name` is required."
 
-- **Request:** `GET /api/projects/:projectId` with User B's token
-- **Expect:** `403`
-- **Request:** `PUT /api/projects/:projectId` with User B's token and `{ "name": "Hijack", "description": "nope" }`
-- **Expect:** `403`
-- **Request:** `DELETE /api/projects/:projectId` with User B's token
-- **Expect:** `403`
+A real id that is not in the collection returns 404 and `{ "message": "No project found with this id!" }`.
 
-### 8. User A updates their project
+![A missing project id returns 404](docs/screenshots/missing.png)
 
-- **Request:** `PUT /api/projects/:projectId` with User A's token
-- **Body:** `{ "name": "Alpha Updated", "description": "Still mine" }`
-- **Expect:** `200` and the updated name
+`not-an-id` is not an ObjectId, so the get returns 500 and a `CastError`.
 
-### 9. User A creates a task
+![A bad project id returns 500](docs/screenshots/bad-id.png)
 
-- **Request:** `POST /api/projects/:projectId/tasks` with User A's token
-- **Body:** `{ "title": "Write tests", "description": "Cover CRUD", "status": "pending" }`
-- **Expect:** `201`. Save the returned `_id` as `taskId`.
+`DELETE /api/projects/:id` returns 200 and `{ "message": "Project deleted!" }` when the owner asks for it. The handler deletes that project document. After this delete, Maya's project list was `[]`.
 
-### 10. User B cannot list, update, or delete that task
+![The project delete response](docs/screenshots/project-deleted.png)
 
-- **Request:** `GET /api/projects/:projectId/tasks` with User B's token
-- **Expect:** `403`
-- **Request:** `PUT /api/tasks/:taskId` with User B's token and `{ "title": "Stolen", "description": "nope", "status": "complete" }`
-- **Expect:** `403`
-- **Request:** `DELETE /api/tasks/:taskId` with User B's token
-- **Expect:** `403`
+## Tasks
 
-### 11. User A updates and deletes the task
+`POST /api/projects/:projectId/tasks` checks that the project exists and that the logged-in user owns it, then saves the task on that project. This body sent `"project": "000000000000000000000000"` and `"status": "pending"`. The saved task uses the id from the URL. Status defaults to `pending` when it is left out. The allowed values are `pending`, `in progress`, and `complete`.
 
-- **Request:** `PUT /api/tasks/:taskId` with User A's token and `{ "title": "Write tests", "description": "Cover CRUD", "status": "in progress" }`
-- **Expect:** `200` and `"status": "in progress"`
-- **Request:** `DELETE /api/tasks/:taskId` with User A's token
-- **Expect:** `200` and `{ "message": "Task deleted!" }`
+![Creating a task returns 201](docs/screenshots/task.png)
 
-### 12. User A deletes the project
+Leo's create on Maya's project returned 403 and `{ "message": "User is not authorized to create a task for this project." }`. Leo's task list returned 403 and `{ "message": "User is not authorized to view tasks for this project." }`.
 
-- **Request:** `DELETE /api/projects/:projectId` with User A's token
-- **Expect:** `200` and `{ "message": "Project deleted!" }`
+`GET /api/projects/:projectId/tasks` returns the tasks for that project. After the update below, the list had one task with status `in progress`.
 
-### 13. Missing records
+![The task list after the status change](docs/screenshots/tasks.png)
 
-- **Request:** `GET /api/projects/<unknown id>` with a valid token
-- **Expect:** `404`
-- **Request:** `PUT /api/tasks/<unknown id>` with a valid token
-- **Expect:** `404`
+`PUT /api/tasks/:taskId` updates the task when the logged-in user owns the parent project. This update set the status to `in progress` and also sent a different `project` id. That field was removed before the update, so the task stayed on `6acfcc2f4120d03a71274f99`. `updatedAt` moved to `2026-10-14T18:41:19.927Z`.
+
+Leo's update returned 403 and `{ "message": "User is not authorized to update this task." }`. Leo's delete returned 403 and `{ "message": "User is not authorized to delete this task." }`.
+
+A status of `done` is rejected on create. The 400 body says "`done` is not a valid enum value for path `status`" and lists `pending`, `in progress`, and `complete`.
+
+![A status of done returns 400](docs/screenshots/bad-status.png)
+
+Creating a task for `000000000000000000000000` returns 404 and `{ "message": "No project found with this id!" }`. Updating `000000000000000000000000` as a task id returns 404 and `{ "message": "No task found with this id!" }`.
+
+`DELETE /api/tasks/:taskId` returns 200 and `{ "message": "Task deleted!" }` for the owner.
+
+![The task delete response](docs/screenshots/task-deleted.png)
+
+There is no route that reads one task. `GET /api/tasks/:taskId` falls through to the 404 handler.
+
+## Unknown paths
+
+`GET /` and `GET /api/register` return 404. The body is the heading `😝 404 Error!`. The page does not set a background.
+
+![The 404 heading](docs/screenshots/not-found.png)
